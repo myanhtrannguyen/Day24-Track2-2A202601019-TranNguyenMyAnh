@@ -30,10 +30,65 @@ set ở tests/vn_pii_testset.jsonl):
 """
 from __future__ import annotations
 
+import re
+
+
+# Các recognizer được viết theo thứ tự ưu tiên.  Một dãy 12 số sau ``STK``
+# là số tài khoản, không phải CCCD, nên phải được nhận diện trước CCCD.
+_EMAIL_RE = re.compile(r"(?<![\w.+-])[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?![\w-])")
+_BANK_ACCOUNT_RE = re.compile(
+    r"(?i)\b(?:stk|số\s*tài\s*khoản|tai\s*khoan)\b\s*(?:là|la|:|-)?\s*"
+    r"(?P<value>\d{8,16})(?!\d)"
+)
+_CCCD_RE = re.compile(r"(?<!\d)\d{12}(?!\d)")
+_PHONE_RE = re.compile(r"(?<!\d)(?:0\d{9}|\+84[\s.-]?\d{9})(?!\d)")
+
+
+def _append_non_overlapping(entities: list[dict], entity: dict) -> None:
+    """Append an entity unless a more-specific earlier recognizer owns it."""
+    if any(entity["start"] < old["end"] and old["start"] < entity["end"] for old in entities):
+        return
+    entities.append(entity)
+
 
 def detect(text: str) -> list[dict]:
-    raise NotImplementedError("BƯỚC 3a: implement PII detection")
+    """Return offsets for the Vietnamese PII formats handled by this lab.
+
+    The detector intentionally uses deterministic, inspectable regexes.  It
+    avoids sending customer text to a third-party NER service before the PII
+    gate has had an opportunity to redact it.
+    """
+    entities: list[dict] = []
+
+    for match in _EMAIL_RE.finditer(text):
+        _append_non_overlapping(
+            entities, {"type": "EMAIL", "start": match.start(), "end": match.end()}
+        )
+    for match in _BANK_ACCOUNT_RE.finditer(text):
+        _append_non_overlapping(
+            entities,
+            {
+                "type": "VN_BANK_ACCOUNT",
+                "start": match.start("value"),
+                "end": match.end("value"),
+            },
+        )
+    for match in _CCCD_RE.finditer(text):
+        _append_non_overlapping(
+            entities, {"type": "VN_CCCD", "start": match.start(), "end": match.end()}
+        )
+    for match in _PHONE_RE.finditer(text):
+        _append_non_overlapping(
+            entities, {"type": "VN_PHONE", "start": match.start(), "end": match.end()}
+        )
+
+    return sorted(entities, key=lambda entity: (entity["start"], entity["end"]))
 
 
 def redact(text: str) -> str:
-    raise NotImplementedError("BƯỚC 3a: implement PII redaction")
+    """Replace every detected entity without invalidating later offsets."""
+    result = text
+    for entity in sorted(detect(text), key=lambda item: item["start"], reverse=True):
+        placeholder = f"[REDACTED_{entity['type']}]"
+        result = result[: entity["start"]] + placeholder + result[entity["end"] :]
+    return result

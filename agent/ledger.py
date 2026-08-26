@@ -33,12 +33,67 @@ rồi gọi verify() phải trả về False.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 
 
+_GENESIS_HASH = "0" * 64
+
+
+def _canonical_hash(entry: dict) -> str:
+    """Hash the canonical JSON representation excluding its stored hash."""
+    payload = {key: value for key, value in entry.items() if key != "hash"}
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _last_hash(path: Path) -> str:
+    if not path.exists() or not path.read_text(encoding="utf-8").strip():
+        return _GENESIS_HASH
+    try:
+        last_line = path.read_text(encoding="utf-8").splitlines()[-1]
+        return str(json.loads(last_line)["hash"])
+    except (IndexError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("cannot append to a malformed audit ledger") from exc
+
+
 def append(entry: dict, path: Path) -> dict:
-    raise NotImplementedError("BƯỚC 3d: implement ledger append")
+    """Append an immutable hash-chained audit record to JSONL."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = dict(entry)
+    record.pop("hash", None)
+    record["prev_hash"] = _last_hash(path)
+    record["hash"] = _canonical_hash(record)
+    with path.open("a", encoding="utf-8") as ledger_file:
+        ledger_file.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+    return record
 
 
 def verify(path: Path) -> bool:
-    raise NotImplementedError("BƯỚC 3d: implement ledger verify")
+    """Verify completeness and the full hash chain, returning False on tamper."""
+    if not path.exists():
+        return True
+
+    expected_previous = _GENESIS_HASH
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for line in lines:
+            if not line.strip():
+                return False
+            record = json.loads(line)
+            if not isinstance(record, dict):
+                return False
+            if not isinstance(record.get("reason"), str) or not record["reason"].strip():
+                return False
+            if not isinstance(record.get("decision"), str) or not record["decision"].strip():
+                return False
+            if record.get("prev_hash") != expected_previous:
+                return False
+            stored_hash = record.get("hash")
+            if not isinstance(stored_hash, str) or stored_hash != _canonical_hash(record):
+                return False
+            expected_previous = stored_hash
+    except (OSError, TypeError, json.JSONDecodeError):
+        return False
+    return True

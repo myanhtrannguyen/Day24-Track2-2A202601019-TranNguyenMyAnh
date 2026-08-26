@@ -37,4 +37,23 @@ class PolicyContext:
 
 
 def check(context: PolicyContext) -> tuple[bool, str]:
-    raise NotImplementedError("BƯỚC 3b: implement policy check")
+    """Make one explicit, auditable authorization decision.
+
+    A reason is deliberately returned for every path: the ledger is evidence
+    of both permitted activity and containment decisions, rather than merely
+    a record of errors.
+    """
+    if context.data_classification == "restricted" and context.egress_enabled:
+        return (
+            False,
+            "deny: restricted data must not be sent over egress "
+            f"(purpose={context.request_purpose}, owner={context.agent_owner})",
+        )
+
+    return (
+        True,
+        "allow: "
+        f"classification={context.data_classification}, "
+        f"egress_enabled={context.egress_enabled}, "
+        f"purpose={context.request_purpose}, owner={context.agent_owner}",
+    )
